@@ -142,10 +142,5 @@ HA Enabled               false
 
 ![gke cluster create](assets/vault-root-token-permissions.jpg?raw=true "gke cluster create")
 
-# Instructions:
-* Installing Helm client:
 
-
-
-* Installing Vault client:
 
