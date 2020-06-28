@@ -12,36 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 #!/bin/bash
-
-mkdir -p ~/gcp-vault
-cd ~/gcp-vault
-
-### pass ENVIRONMENT VARIABLES
-
-BUCKET_NAME=kubelancer-vault-data-bucket-demo
-KEYRINGS=kubelancer-testring-demo
-KEYS=kubelancer-testkey-demo
-SA=vault-svc-account-demo
+export KEYRINGS=vault-testkeyring
+export KEYS=vault-testkey
+export SA=vault-svc-account
 
 ### export ENVIRONMENT VARIABLES
-
-export PROJECT_ID=your-gcp-project-name
-export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(projectNumber)"`
+export PROJECT_ID="your-project-id"
+export PROJECT_NUMBER='gcloud projects describe $PROJECT_ID --format="value(projectNumber)"'
 export VAULT_SERVICE_ACCOUNT=$SA@$PROJECT_ID.iam.gserviceaccount.com
+BUCKET_NAME=vault-data-bucket$PROJECT_NUMBER
 
 ### Create Service Account
-
+gcloud config set project $PROJECT_ID
 gcloud iam service-accounts create $SA --display-name "Vault Service Account"
 gcloud iam service-accounts keys create vault-svc.json --iam-account=$VAULT_SERVICE_ACCOUNT
 
 ### Enable cloudkms API
 gcloud services enable cloudkms.googleapis.com
+
 ###Update Roles for Service Account
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/iam.serviceAccountAdmin
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/iam.serviceAccountKeyAdmin
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/compute.viewer
-gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/storage.admingcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/storage.objectViewer
+gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/storage.admin
+gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/storage.objectViewer
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/cloudkms.admin
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/cloudkms.cryptoKeyEncrypterDecrypter
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$VAULT_SERVICE_ACCOUNT --role=roles/owner
@@ -50,8 +46,8 @@ echo "------------------------------"
 echo "Updating policy, Please wait ......."
 sleep 30
 echo "------------------------------"
-## To list roles
 
+## To list roles
 gcloud projects get-iam-policy $PROJECT_ID  \
 --flatten="bindings[].members" \
 --format='table(bindings.role)' \
@@ -65,14 +61,12 @@ gcloud container clusters get-credentials cluster-1 --zone us-central1-a
 kubectl get nodes
 
 ### Google Cloud Storage Storage Backend
-
 gsutil mb gs://$BUCKET_NAME
-gsutil acl ch -r -u AllUsers:R gs://$BUCKET_NAME
 gsutil acl ch  -u AllUsers:R gs://$BUCKET_NAME
 
 ### Creating symmetric keys
 
-gcloud kms keyrings create $KEYRINGS   --location global
+gcloud kms testkeyrings create $testkeyringS   --location global
 gcloud kms keys create $KEYS \
   --location global \
   --keyring $KEYRINGS \
@@ -90,12 +84,9 @@ gcloud kms keys add-iam-policy-binding $KEYS \
 ## Note: use helm verion 3
 
 kubectl create secret generic google-secret --from-literal=GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/service-account.json --from-file=service-account.json=./vault-svc.json
+helm repo add banzaicloud-stable https://kubernetes-charts.banzaicloud.com
 
-
-git clone https://github.com/banzaicloud/bank-vaults.git
-cd ~/gcp-vault/bank-vaults/charts
-
-helm  install vault \
+helm install banzaicloud-stable/vault \
 --set "vault.customSecrets[0].secretName=google-secret" \
 --set "vault.customSecrets[0].mountPath=/etc/gcp" \
 --set "vault.config.storage.gcs.bucket=$BUCKET_NAME" \
@@ -119,10 +110,11 @@ helm  install vault \
 --name-template vault
 
 ### Decrypt Vault Token
-cd ~/gcp-vault
+
+mkdir  ~/gcp-vault
 echo "------------------------------"
 echo "Installation is in progress, Please wait ..............."
-sleep 60
+sleep 90
 echo "------------------------------"
 echo "Decrypting VAULT_TOKEN"
 gsutil copy gs://$BUCKET_NAME/vault-root .
@@ -130,28 +122,67 @@ gcloud kms decrypt --key=$KEYS --keyring=$KEYRINGS --location=global --ciphertex
 ## Root Token
 for i in `cat vault-root.dec`; do export VAULT_TOKEN=$i; done
 
+
+
 ### Installing Vault-Client
 echo "------------------------------"
 echo "Installing Vault Client"
 echo "------------------------------"
 cd ~/gcp-vault
-https://releases.hashicorp.com/vault/1.4.0/vault_1.4.0_linux_amd64.zip
+wget https://releases.hashicorp.com/vault/1.4.0/vault_1.4.0_linux_amd64.zip
 unzip vault_1.4.0_linux_amd64.zip
-sudo cp -rf vault /usr/local/bin/ ; sudo chmod +x /us
+sudo cp -rf vault /usr/local/bin/ ; 
+sudo chmod +x /usr/local/bin/vault
 
+
+### Expose Vault Service using  Nginx Ingress
+
+kubectl create clusterrolebinding cluster-admin-binding \
+  --clusterrole cluster-admin \
+  --user $(gcloud config get-value account)
+
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-0.32.0/deploy/static/provider/cloud/deploy.yaml
+
+### Create records on  Domain Controller
+# Create A record on your domain manager  for External IP
+kubectl get svc -n ingress-nginx 
+
+### Create Ingress for Vault Service
+
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: vault-ingress
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: "nginx" 
+spec:
+  rules:
+  - host: vault.kubelancer.net
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: vault
+          servicePort: 8200
+          
+          
 ## Vault login
+
 echo "------------------------------"
 echo "LoadBalancer provision is in progress, Please wait ..............."
-sleep 60
+sleep 90
 echo "------------------------------"
-export SERVICE_IP=$(kubectl get svc --namespace default vault -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
 echo "VAULT_ADDR"
-export VAULT_ADDR=https://$SERVICE_IP:8200
+export VAULT_ADDR=http://vault.kubelancer.net:8200
 echo "TLS SKIP"
 export VAULT_SKIP_VERIFY=1
 echo "Vault status"
 vault status
 echo "Vault Login"
+
 vault login -method=token token=$VAULT_TOKEN
-echo "------------------------------"
-echo "Setup Complete, Have a great day"
+
+
+
